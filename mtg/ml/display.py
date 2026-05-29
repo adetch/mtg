@@ -385,11 +385,26 @@ def recalibrate_basics(built_deck, cards, verbose=False):
 
     --> eventually this will not be necessary, once deckbuilder improves
     """
+    basic_name_to_color = {
+        "plains": "W",
+        "island": "U",
+        "swamp": "B",
+        "mountain": "R",
+        "forest": "G",
+    }
+
+    def basic_color(row):
+        produced_mana = row["produced_mana"]
+        if isinstance(produced_mana, list) and produced_mana:
+            return produced_mana[0]
+        if isinstance(produced_mana, str) and produced_mana:
+            return produced_mana[0]
+        return basic_name_to_color.get(str(row["name"]).lower())
+
+    basic_colors = cards[cards["idx"] < 5].copy()
+    basic_colors["produced_mana"] = basic_colors.apply(basic_color, axis=1)
     color_to_idx = (
-        cards[cards["idx"] < 5]
-        .set_index("idx")["produced_mana"]
-        .apply(lambda x: x[0])
-        .reset_index()
+        basic_colors.dropna(subset=["produced_mana"])
         .set_index("produced_mana")
         .to_dict()["idx"]
     )

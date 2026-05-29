@@ -142,7 +142,9 @@ class Trainer:
                     extras[attr_name].append(attr)
 
                 if self.val_generator is not None:
-                    val_features, val_target, val_weights = self.val_generator[i]
+                    val_features, val_target, val_weights = self.val_generator[
+                        i % len(self.val_generator)
+                    ]
                     # must get attention here to serialize the input for saving
                     val_output = self.model(val_features, training=False)
                     val_loss = self.model.loss(

@@ -32,22 +32,22 @@ def sort_cols_by_card_idxs(df, card_col_prefixes, cards):
 
 def load_bo1_data(filename, cards):
     COLUMN_REGEXES = {
-        re.compile(r"user_game_win_rate_bucket"): "float16",
+        re.compile(r"user_game_win_rate_bucket"): "float32",
         re.compile(r"rank"): "str",
         re.compile(r"draft_id"): "str",
         re.compile(r"draft_time"): "str",
         re.compile(r"expansion"): "str",
         re.compile(r"event_type"): "str",
-        re.compile(r"deck_.*"): "int8",
-        re.compile(r"sideboard_.*"): "int8",
-        re.compile(r"drawn_.*"): "int8",
-        re.compile(r"sideboard_.*"): "int8",
-        re.compile(r"opening_hand_.*"): "int8",
-        re.compile(r"on_play"): "int8",
-        re.compile(r"won"): "int8",
-        re.compile(r"num_turns"): "int8",
-        re.compile(r"num_mulligans"): "int8",
-        re.compile(r"opp_num_mulligans"): "int8",
+        re.compile(r"deck_.*"): "float32",
+        re.compile(r"sideboard_.*"): "float32",
+        re.compile(r"drawn_.*"): "float32",
+        re.compile(r"sideboard_.*"): "float32",
+        re.compile(r"opening_hand_.*"): "float32",
+        re.compile(r"on_play"): "float32",
+        re.compile(r"won"): "float32",
+        re.compile(r"num_turns"): "float32",
+        re.compile(r"num_mulligans"): "float32",
+        re.compile(r"opp_num_mulligans"): "float32",
     }
     col_names = pd.read_csv(filename, nrows=0).columns
     data_types = {}
@@ -64,22 +64,23 @@ def load_bo1_data(filename, cards):
             if r.match(c):
                 data_types[c] = t
 
+    metadata_cols = [
+        "draft_id",
+        "draft_time",
+        "won",
+        "user_game_win_rate_bucket",
+        "rank",
+        "on_play",
+        "num_turns",
+        "num_mulligans",
+        "opp_num_mulligans"
+        # ...
+    ]
+    usecols = [col for col in metadata_cols if col in col_names] + draft_cols
     df = pd.read_csv(
         filename,
         dtype=data_types,
-        usecols=[
-            "draft_id",
-            "draft_time",
-            "won",
-            "user_game_win_rate_bucket",
-            "rank",
-            "on_play",
-            "num_turns",
-            "num_mulligans",
-            "opp_num_mulligans"
-            # ...
-        ]
-        + draft_cols,
+        usecols=usecols,
     )
     rename_cols = {
         "user_game_win_rate_bucket": "user_win_rate_bucket",
@@ -88,6 +89,8 @@ def load_bo1_data(filename, cards):
     df.columns = [
         x.lower() if x not in rename_cols else rename_cols[x] for x in df.columns
     ]
+    if "user_win_rate_bucket" not in df.columns:
+        df["user_win_rate_bucket"] = 0.5
     df["won"] = df["won"].astype(float)
     df["date"] = pd.to_datetime(df["date"])
     card_col_prefixes = ["deck", "opening_hand", "drawn", "sideboard"]
@@ -97,7 +100,7 @@ def load_bo1_data(filename, cards):
 
 def load_draft_data(filename, cards):
     COLUMN_REGEXES = {
-        re.compile(r"user_game_win_rate_bucket"): "float16",
+        re.compile(r"user_game_win_rate_bucket"): "float32",
         re.compile(r"user_n_games_bucket"): "int8",
         re.compile(r"rank"): "str",
         re.compile(r"draft_id"): "str",
@@ -109,8 +112,8 @@ def load_draft_data(filename, cards):
         re.compile(r"pack_number"): "int8",
         re.compile(r"pick_number"): "int8",
         re.compile(r"pick$"): "str",
-        re.compile(r"pick_maindeck_rate"): "float16",
-        re.compile(r"pick_sideboard_in_rate"): "float16",
+        re.compile(r"pick_maindeck_rate"): "float32",
+        re.compile(r"pick_sideboard_in_rate"): "float32",
         re.compile(r"pool_.*"): "int8",
         re.compile(r"pack_card_.*"): "int8",
     }
@@ -128,22 +131,23 @@ def load_draft_data(filename, cards):
             if r.match(c):
                 data_types[c] = t
 
+    metadata_cols = [
+        "draft_id",
+        "draft_time",
+        "event_match_losses",
+        "event_match_wins",
+        "pack_number",
+        "pick_number",
+        "user_n_games_bucket",
+        "user_game_win_rate_bucket",
+        "rank"
+        # ...
+    ]
+    usecols = [col for col in metadata_cols if col in col_names] + draft_cols
     df = pd.read_csv(
         filename,
         dtype=data_types,
-        usecols=[
-            "draft_id",
-            "draft_time",
-            "event_match_losses",
-            "event_match_wins",
-            "pack_number",
-            "pick_number",
-            "user_n_games_bucket",
-            "user_game_win_rate_bucket",
-            "rank"
-            # ...
-        ]
-        + draft_cols,
+        usecols=usecols,
     )
     rename_cols = {
         "user_game_win_rate_bucket": "user_win_rate_bucket",
@@ -152,11 +156,14 @@ def load_draft_data(filename, cards):
     df.columns = [
         x.lower() if x not in rename_cols else rename_cols[x] for x in df.columns
     ]
+    df["pick"] = df["pick"].str.lower()
+    basics = {"plains", "island", "swamp", "mountain", "forest"}
+    basic_pick_draft_ids = df.loc[df["pick"].isin(basics), "draft_id"].unique()
+    df = df[~df["draft_id"].isin(basic_pick_draft_ids)]
     n_picks = df.groupby("draft_id")["pick"].count()
     t = n_picks.max()
     bad_draft_ids = n_picks[n_picks < t].index.tolist()
     df = df[~df["draft_id"].isin(bad_draft_ids)]
-    df["pick"] = df["pick"].str.lower()
     df["date"] = pd.to_datetime(df["date"])
     df["won"] = (
         df["event_match_wins"] / (df["event_match_wins"] + df["event_match_losses"])
@@ -166,6 +173,13 @@ def load_draft_data(filename, cards):
     df["position"] = (
         df["pack_number"] * (df["pick_number"].max() + 1) + df["pick_number"]
     )
+    position_map = {pos: idx for idx, pos in enumerate(sorted(df["position"].unique()))}
+    df["position"] = df["position"].map(position_map)
+    expected_positions = set(range(len(position_map)))
+    complete_draft_ids = df.groupby("draft_id")["position"].apply(
+        lambda positions: set(positions.astype(int)) == expected_positions
+    )
+    df = df[df["draft_id"].isin(complete_draft_ids[complete_draft_ids].index)]
     df = df.sort_values(by=["draft_id", "position"])
     return df
 

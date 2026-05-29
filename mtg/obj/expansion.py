@@ -20,6 +20,13 @@ class Expansion:
         idx_to_name=None,
     ):
         self.expansion = expansion
+        self._data_sources = {
+            "bo1": bo1,
+            "bo3": bo3,
+            "quick": quick,
+            "draft": draft,
+            "replay": replay,
+        }
         self.cards = self.get_cards_from_scryfall()
         self.clean_card_df(idx_to_name)
         self.bo1 = self.process_data(bo1, name="bo1")
@@ -81,6 +88,7 @@ class Expansion:
         ml_data = self.get_card_stats()
         colors = list("WUBRG")
         cards = self.cards.set_index("name").copy()
+        ml_data = ml_data.reindex(cards.index).fillna(0.0)
         # Power/Toughness sometimes has "*" instead of numbers, so need to
         # convert variable P/Ts to unique integers so that it can feed to the model
         cards = cards.replace(to_replace="1+*", value=-1)
@@ -106,6 +114,9 @@ class Expansion:
         rarities = cards["rarity"].unique()
         for rarity in rarities:
             ml_data[rarity] = cards["rarity"].apply(lambda x: int(x == rarity))
+        for rarity in ["mythic", "rare"]:
+            if rarity not in ml_data.columns:
+                ml_data[rarity] = 0
         ml_data["produces C"] = cards["produced_mana"].apply(lambda x: 0 if not isinstance(x, list) else int("C" in x))
         ml_data.columns = [x.lower() for x in ml_data.columns]
         count_cols = [x for x in ml_data.columns if "_count" in x]
@@ -441,7 +452,107 @@ class BRO(Expansion):
         return types
 
 
-EXPANSIONS = [VOW, SNC, DMU, BRO]
+class DataBackedExpansion(Expansion):
+    def get_cards_from_scryfall(self):
+        source = self._data_sources.get("draft") or self._data_sources.get("bo1")
+        if source is None:
+            return super().get_cards_from_scryfall()
+
+        col_names = pd.read_csv(source, nrows=0).columns
+        names = []
+        prefixes = [
+            "deck_",
+            "sideboard_",
+            "opening_hand_",
+            "drawn_",
+            "pack_card_",
+            "pool_",
+        ]
+        for col in col_names:
+            for prefix in prefixes:
+                if col.startswith(prefix):
+                    names.append(col[len(prefix):].lower())
+                    break
+
+        basics = ["plains", "island", "swamp", "mountain", "forest"]
+        names = sorted({name for name in names if name not in basics})
+        ordered_names = basics + names
+        rows = []
+        for idx, name in enumerate(ordered_names):
+            rows.append(
+                {
+                    "name": name,
+                    "idx": idx,
+                    "oracle_text": "",
+                    "layout": "normal",
+                    "mana_cost": "",
+                    "colors": [],
+                    "produced_mana": [],
+                    "cmc": 0,
+                    "power": 0,
+                    "toughness": 0,
+                    "keywords": [],
+                    "type_line": "basic land" if name in basics else "",
+                    "rarity": "basic" if name in basics else "unknown",
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def get_card_stats(self):
+        return pd.DataFrame(index=self.cards["name"])
+
+    def clean_card_df(self, idx_to_name=None):
+        super().clean_card_df(idx_to_name=idx_to_name)
+        self.cards["rarity"] = self.cards["rarity"].replace({"unknown": "common"})
+
+
+class SOS(DataBackedExpansion):
+    def __init__(
+        self,
+        bo1=None,
+        bo3=None,
+        quick=None,
+        draft=None,
+        replay=None,
+        ml_data=True,
+        idx_to_name=None,
+    ):
+        super().__init__(
+            expansion="sos",
+            bo1=bo1,
+            bo3=bo3,
+            quick=quick,
+            draft=draft,
+            replay=replay,
+            ml_data=ml_data,
+            idx_to_name=idx_to_name,
+        )
+
+
+class STX(DataBackedExpansion):
+    def __init__(
+        self,
+        bo1=None,
+        bo3=None,
+        quick=None,
+        draft=None,
+        replay=None,
+        ml_data=True,
+        idx_to_name=None,
+    ):
+        super().__init__(
+            expansion="stx",
+            bo1=bo1,
+            bo3=bo3,
+            quick=quick,
+            draft=draft,
+            replay=replay,
+            ml_data=ml_data,
+            idx_to_name=idx_to_name,
+        )
+
+
+EXPANSIONS = [VOW, SNC, DMU, BRO, SOS, STX]
 
 
 def get_expansion_obj_from_name(expansion):

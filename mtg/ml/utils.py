@@ -18,6 +18,7 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
         self.warmup_steps = warmup_steps
 
     def __call__(self, step):
+        step = tf.cast(step, tf.float32)
         arg1 = tf.math.rsqrt(step)
         arg2 = step * (self.warmup_steps ** -1.5)
 
@@ -35,9 +36,16 @@ def importance_weighting(df, minim=0.1, maxim=1.0):
     }
     # decrease exponentiation by larger amounts for higher
     # ranks such that rank and win-rate matter together
-    rank_addition = df["rank"].apply(lambda x: rank_to_score.get(x, 0.5))
+    if "rank" in df.columns:
+        rank_addition = df["rank"].apply(lambda x: rank_to_score.get(x, 0.5))
+    else:
+        rank_addition = 0.5
+    if "user_win_rate_bucket" in df.columns:
+        user_win_rate = df["user_win_rate_bucket"].fillna(0.5)
+    else:
+        user_win_rate = 0.5
     scaled_win_rate = np.clip(
-        df["user_win_rate_bucket"].fillna(0.5) ** (2 - rank_addition),
+        user_win_rate ** (2 - rank_addition),
         a_min=minim,
         a_max=maxim,
     )
