@@ -554,6 +554,9 @@ class DataBackedExpansion(Expansion):
         rows = []
         for idx, name in enumerate(ordered_names):
             card = scryfall.get(name, {})
+            produced_mana = card.get("produced_mana")
+            if produced_mana is None and "Land" in str(card.get("type_line", "")):
+                produced_mana = card.get("color_identity", [])
             rows.append(
                 {
                     "name": name,
@@ -562,7 +565,7 @@ class DataBackedExpansion(Expansion):
                     "layout": card.get("layout", "normal"),
                     "mana_cost": card.get("mana_cost", ""),
                     "colors": card.get("colors", []),
-                    "produced_mana": card.get("produced_mana", []),
+                    "produced_mana": produced_mana or [],
                     "cmc": card.get("cmc", 0),
                     "power": card.get("power", 0),
                     "toughness": card.get("toughness", 0),
