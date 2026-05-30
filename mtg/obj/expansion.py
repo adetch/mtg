@@ -1,3 +1,5 @@
+import json
+import os
 import random
 import time
 
@@ -502,6 +504,28 @@ class BRO(Expansion):
 
 
 class DataBackedExpansion(Expansion):
+    def _local_scryfall_rows(self):
+        candidates = [
+            os.path.join(os.getcwd(), "artifacts", f"{self.expansion.lower()}_scryfall.json"),
+            os.path.join(os.getcwd(), "artifacts", f"{self.expansion.upper()}_scryfall.json"),
+        ]
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                raw = json.load(f)
+            rows = raw.values() if isinstance(raw, dict) else raw
+            out = {}
+            for card in rows:
+                name = str(card.get("name", "")).lower()
+                if not name:
+                    continue
+                out[name] = card
+                for face in name.split(" // "):
+                    out.setdefault(face, card)
+            return out
+        return {}
+
     def get_cards_from_scryfall(self):
         source = self._data_sources.get("draft") or self._data_sources.get("bo1")
         if source is None:
@@ -526,23 +550,25 @@ class DataBackedExpansion(Expansion):
         basics = ["plains", "island", "swamp", "mountain", "forest"]
         names = sorted({name for name in names if name not in basics})
         ordered_names = basics + names
+        scryfall = self._local_scryfall_rows()
         rows = []
         for idx, name in enumerate(ordered_names):
+            card = scryfall.get(name, {})
             rows.append(
                 {
                     "name": name,
                     "idx": idx,
-                    "oracle_text": "",
-                    "layout": "normal",
-                    "mana_cost": "",
-                    "colors": [],
-                    "produced_mana": [],
-                    "cmc": 0,
-                    "power": 0,
-                    "toughness": 0,
-                    "keywords": [],
-                    "type_line": "basic land" if name in basics else "",
-                    "rarity": "basic" if name in basics else "unknown",
+                    "oracle_text": card.get("oracle_text", ""),
+                    "layout": card.get("layout", "normal"),
+                    "mana_cost": card.get("mana_cost", ""),
+                    "colors": card.get("colors", []),
+                    "produced_mana": card.get("produced_mana", []),
+                    "cmc": card.get("cmc", 0),
+                    "power": card.get("power", 0),
+                    "toughness": card.get("toughness", 0),
+                    "keywords": card.get("keywords", []),
+                    "type_line": card.get("type_line", "basic land" if name in basics else ""),
+                    "rarity": card.get("rarity", "basic" if name in basics else "unknown"),
                 }
             )
         return pd.DataFrame(rows)
