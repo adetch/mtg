@@ -18,6 +18,8 @@ class Trainer:
         val_weights=None,
         clip=5.0,
         loss_agg_f=lambda x: np.sum(x),
+        val_every=1,
+        sync_every=1,
     ):
         self.generator = generator
         self.val_generator = val_generator
@@ -35,6 +37,8 @@ class Trainer:
         self.val_features = val_features
         self.val_target = val_target
         self.val_weights = val_weights
+        self.val_every = max(1, int(val_every))
+        self.sync_every = max(1, int(sync_every))
 
         if self.generator is not None:
             assert self.features is None
@@ -113,6 +117,7 @@ class Trainer:
             extra_metrics = {k: [] for k in extra_metric_keys}
             for i in range(n_batches):
                 val_loss = None
+                should_sync = i % self.sync_every == 0 or i == n_batches - 1
                 if self.generator is None:
                     batch_idx = self.batch_ids[i * batch_size : (i + 1) * batch_size]
                     batch_features = self.features[batch_idx, :]
@@ -128,20 +133,21 @@ class Trainer:
                     batch_features,
                     batch_target,
                     batch_weights,
-                    only_val_metrics=only_val_metrics,
+                    only_val_metrics=only_val_metrics or not should_sync,
                 )
-                for m_key, m_val in metrics.items():
-                    if len(m_val.shape) > 1:
-                        m_val = self.loss_agg_f(m_val)
-                    extra_metrics[m_key].append(m_val)
-                losses.append(self.loss_agg_f(loss))
-                for attr_name in extras.keys():
-                    attr = getattr(self.model, attr_name, None)
-                    if len(attr.shape) > 1:
-                        attr = self.loss_agg_f(attr)
-                    extras[attr_name].append(attr)
+                if should_sync:
+                    for m_key, m_val in metrics.items():
+                        if len(m_val.shape) > 1:
+                            m_val = self.loss_agg_f(m_val)
+                        extra_metrics[m_key].append(m_val)
+                    losses.append(self.loss_agg_f(loss))
+                    for attr_name in extras.keys():
+                        attr = getattr(self.model, attr_name, None)
+                        if len(attr.shape) > 1:
+                            attr = self.loss_agg_f(attr)
+                        extras[attr_name].append(attr)
 
-                if self.val_generator is not None:
+                if self.val_generator is not None and (i % self.val_every == 0 or i == n_batches - 1):
                     val_features, val_target, val_weights = self.val_generator[
                         i % len(self.val_generator)
                     ]

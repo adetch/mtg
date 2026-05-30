@@ -177,11 +177,11 @@ class DraftBot(tf.Module):
         # TODO: represent packs as 15 indices for each card in the pack rather than a
         #       binary vector. It's more computationally efficient and doesn't require
         #       the step below
-        self.pack_card_embeddings = packs[:, :, :, None] * self.all_card_embeddings[None, None, :, :]
         # get the number of cards in each pack
         self.n_options = tf.reduce_sum(packs, axis=-1, keepdims=True)
         # the pack_embedding is the average of the embeddings of the cards in the pack
-        self.pack_embeddings = tf.reduce_sum(self.pack_card_embeddings, axis=2) / self.n_options
+        pooled = tf.einsum("btn,ne->bte", packs, self.all_card_embeddings)
+        self.pack_embeddings = pooled / self.n_options
         # add the positional information to the card embeddings
         self.embs = self.pack_embeddings * tf.math.sqrt(self.emb_dim) + self.positional_embeddings
         # additive draft-level conditioning: emb(rank) + emb(run_wins) + emb(format).
@@ -203,12 +203,11 @@ class DraftBot(tf.Module):
         # we run the transformer encoder on the pack information. This is where the
         #     bot learns how to predict the wheel. Search for improvements on how
         #     this informs color distribution/expectation and pivots
-        self.encoder_holder = []
+        attention_weights_pack = None
         for memory_layer in self.encoder_layers:
             self.embs, attention_weights_pack = memory_layer(
                 self.embs, positional_masks, training=training
             )  # (batch_size, t, emb_dim)
-            self.encoder_holder.append((self.embs, attention_weights_pack))
 
         # we run the transformer decoder on the pick information. So, at P1P5 decision,
         #     the transformer gets passed what the human took at P1P4. Attention with a
@@ -225,7 +224,7 @@ class DraftBot(tf.Module):
         if training and self.dropout > 0.0:
             self.dec_embs = tf.nn.dropout(self.dec_embs, rate=self.dropout)
 
-        self.decoder_holder = []
+        attention_weights_pick = None
         for memory_layer in self.decoder_layers:
             self.dec_embs, attention_weights_pick = memory_layer(
                 self.dec_embs,
@@ -233,12 +232,11 @@ class DraftBot(tf.Module):
                 encoder_output=self.embs,
                 training=training,
             )  # (batch_size, t, emb_dim)
-            self.decoder_holder.append((self.dec_embs, attention_weights_pick))
         # in order to remove all cards in the set not in the pack as options, we create a
         #     mask that will guarantee the values will be zero when applying softmax
         self.mask_for_softmax = 1e9 * (1 - packs)
         self.card_rankings = (
-            self.output_decoder(self.dec_embs, training=training) * packs - self.mask_for_softmax
+            self.output_decoder(self.dec_embs, training=training) - self.mask_for_softmax
         )  # (batch_size, t, n_cards)
         # compute the euclidian distance between each card embedding from the pack and
         #     the output of the transformer decoder. This is used to regularize the network
@@ -250,16 +248,11 @@ class DraftBot(tf.Module):
         #       the card with the closest distance to the output of the context (transformer
         #       decoder). This consistently lagged behind using the decoder on validation
         #       performance. Still a lot to experiment with the embedding space.
-        self.emb_dists = (
-            tf.sqrt(
-                tf.reduce_sum(
-                    tf.square(self.pack_card_embeddings - self.dec_embs[:, :, None, :]),
-                    -1,
-                )
-            )
-            * packs
-            + self.mask_for_softmax
-        )
+        dec_sq = tf.reduce_sum(tf.square(self.dec_embs), axis=-1, keepdims=True)
+        card_sq = tf.reduce_sum(tf.square(self.all_card_embeddings), axis=-1)
+        cross = tf.einsum("bte,ne->btn", self.dec_embs, self.all_card_embeddings)
+        d2 = dec_sq + card_sq[None, None, :] - 2.0 * cross
+        self.emb_dists = tf.sqrt(tf.maximum(d2, 0.0)) * packs + self.mask_for_softmax
         self.output = tf.nn.softmax(self.card_rankings)
 
         if return_attention:
@@ -371,6 +364,15 @@ class DraftBot(tf.Module):
         )
 
     def determine_bad_behavior(self, true, pred, sample_weight=None):
+        if self.rare_lambda == 0:
+            true_one_hot = tf.one_hot(true, self.n_cards)
+            true_cmc = tf.reduce_sum(true_one_hot * self.cmc, axis=-1)
+            pred_cmc = tf.reduce_sum(pred * self.cmc, axis=-1)
+            cmc_loss = tf.maximum(pred_cmc - true_cmc + self.cmc_margin, 0.0) * self.cmc_lambda
+            self.cmc_loss = tf.reduce_sum(cmc_loss * sample_weight)
+            self.rare_loss = tf.zeros_like(self.cmc_loss)
+            return self.cmc_loss
+
         true_one_hot = tf.one_hot(true, self.n_cards)
         # penalize for taking more expensive cards than what the human took
         #    basically, if you're going to make a mistake, bias to low cmc cards
