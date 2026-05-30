@@ -239,10 +239,17 @@ def draft_log_ai(
         ),
         batch_size,
     ).reshape(batch_size, t)
+    # evaluate the model under the policy we ship: Mythic (rank id 6), high run-wins
+    # (7), Premier (format id 1). These match the conditioning ids fed at inference
+    # time in draftbot_ranker so replay agreement reflects the deployed policy.
+    cond_shape = (batch_size, t)
     model_input = (
         tf.convert_to_tensor(draft_info[:, :, :n_cards], dtype=tf.float32),
         tf.convert_to_tensor(np_pick, dtype=tf.int32),
         tf.convert_to_tensor(positions, dtype=tf.int32),
+        tf.convert_to_tensor(np.full(cond_shape, 6, dtype=np.int32), dtype=tf.int32),
+        tf.convert_to_tensor(np.full(cond_shape, 7, dtype=np.int32), dtype=tf.int32),
+        tf.convert_to_tensor(np.full(cond_shape, 1, dtype=np.int32), dtype=tf.int32),
     )
     # we get the first element in anything we return to handle the case where the model couldn't properly serialize
     # and we hence need to copy the data to be the same shape as the batch size in order to run a stored model

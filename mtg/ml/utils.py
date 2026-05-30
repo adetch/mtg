@@ -26,50 +26,15 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
 
 def importance_weighting(df, minim=0.1, maxim=1.0):
-    rank_to_score = {
-        "bronze": 0.01,
-        "silver": 0.1,
-        "gold": 0.25,
-        "platinum": 0.5,
-        "diamond": 0.75,
-        "mythic": 1.0,
-    }
-    # decrease exponentiation by larger amounts for higher
-    # ranks such that rank and win-rate matter together
-    if "rank" in df.columns:
-        rank_addition = df["rank"].apply(lambda x: rank_to_score.get(x, 0.5))
-    else:
-        rank_addition = 0.5
-    if "user_win_rate_bucket" in df.columns:
-        user_win_rate = df["user_win_rate_bucket"].fillna(0.5)
-    else:
-        user_win_rate = 0.5
-    scaled_win_rate = np.clip(
-        user_win_rate ** (2 - rank_addition),
-        a_min=minim,
-        a_max=maxim,
-    )
-
+    # Player skill (rank / run-wins) and format are now CONDITIONING INPUTS to the
+    # model rather than sample weights, and the PxP1 "reduce rare drafting"
+    # position down-weight has been dropped (position remains a model feature, just
+    # not a weight). So sample weighting keeps ONLY recency: it is about metagame
+    # drift over time, not about pick quality. See state/sos_conditioning_plan.md.
     last = df["date"].max()
     # increase importance factor for recent data points according to number of weeks from most recent data point
     n_weeks = df["date"].apply(lambda x: (last - x).days // 7)
-    # lower the value of pxp11 +
-    if "position" in df.columns:
-        pack_size = (df["position"].max() + 1) / 3
-        pick_nums = df["position"] % pack_size + 1
-        # alpha default to this (~0.54) because it places highest
-        # importance in the beginning of the pack, but lower on PxP1
-        # to help reduce rare drafting. Nice property of PxP1 ~= PxP8
-        alpha = np.e / 5.0
-        position_scale = pick_nums.apply(lambda x: (np.log(x) + 1) / np.power(x, alpha))
-    else:
-        position_scale = 1.0
-    return (
-        position_scale
-        * scaled_win_rate
-        * np.clip(df["won"], a_min=0.5, a_max=1.0)
-        * 0.9 ** n_weeks
-    )
+    return 0.9 ** n_weeks
 
 
 def load_model(location, extra_pickle="attrs.pkl"):

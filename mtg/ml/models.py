@@ -57,6 +57,9 @@ class DraftBot(tf.Module):
         emb_dropout=0.0,
         memory_dropout=0.0,
         out_dropout=0.0,
+        n_ranks=7,
+        n_wins=8,
+        n_formats=3,
         name=None,
     ):
         super().__init__(name=name)
@@ -77,6 +80,22 @@ class DraftBot(tf.Module):
         self.dropout = emb_dropout
         # positional embedding allows deviation given temporal context
         self.positional_embedding = Embedding(self.t, emb_dim, name="positional_embedding")
+        # draft-level conditioning embeddings (additive v1). Instead of baking
+        #     player skill into sample weights, we represent
+        #     P(pick | pack, history, rank, run_wins, format) directly: a learned
+        #     embedding for the draft's rank tier, its run win-count bucket, and
+        #     its event format are summed into one draft-level vector that is added
+        #     to every position's token embedding in __call__. A shared card/
+        #     transformer backbone lets the scarce Mythic / high-win slice inherit
+        #     the fundamentals while only learning the small winning delta.
+        # id 0 is reserved for "unknown" in each (rank: 6 tiers + unknown,
+        #     run_wins: 0-7, format: {premier, trad} + unknown).
+        self.n_ranks = n_ranks
+        self.n_wins = n_wins
+        self.n_formats = n_formats
+        self.rank_embedding = Embedding(n_ranks, emb_dim, name="rank_embedding")
+        self.wins_embedding = Embedding(n_wins, emb_dim, name="wins_embedding")
+        self.format_embedding = Embedding(n_formats, emb_dim, name="format_embedding")
         # lookahead mask to prevent the algorithm from seeing information it isn't
         #     allowed to (e.g. at P1P5 you cannot look at P1P6-P3P14)
         self.positional_mask = 1 - tf.linalg.band_part(tf.ones((self.t, self.t)), -1, 0)
@@ -138,11 +157,14 @@ class DraftBot(tf.Module):
         training=None,
         return_attention=False,
     ):
-        packs, picks, positions = features
+        packs, picks, positions, rank_ids, wins_ids, format_ids = features
         # store last data batch in case specific batch of data causes an issue
         self.last_packs = packs
         self.last_picks = picks
         self.last_positions = positions
+        self.last_rank_ids = rank_ids
+        self.last_wins_ids = wins_ids
+        self.last_format_ids = format_ids
         # get the positional mask, which is a lookahead mask for autoregressive predictions.
         #    effectively, to make a decision a P1P5, we make sure the model can never see P1P6
         #    or later
@@ -162,6 +184,18 @@ class DraftBot(tf.Module):
         self.pack_embeddings = tf.reduce_sum(self.pack_card_embeddings, axis=2) / self.n_options
         # add the positional information to the card embeddings
         self.embs = self.pack_embeddings * tf.math.sqrt(self.emb_dim) + self.positional_embeddings
+        # additive draft-level conditioning: emb(rank) + emb(run_wins) + emb(format).
+        #     The ids are constant within a draft, so each embedding lookup yields a
+        #     (batch, t, emb_dim) tensor that already broadcasts across every position.
+        #     This is the simplest standard global-conditioning method; if a
+        #     rank/wins-conditioned policy barely differs from average, upgrade to
+        #     FiLM/gating or a prepended conditioning token.
+        self.conditioning = (
+            self.rank_embedding(rank_ids, training=training)
+            + self.wins_embedding(wins_ids, training=training)
+            + self.format_embedding(format_ids, training=training)
+        )
+        self.embs = self.embs + self.conditioning
 
         if training and self.dropout > 0.0:
             self.embs = tf.nn.dropout(self.embs, rate=self.dropout)

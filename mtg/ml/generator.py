@@ -159,6 +159,35 @@ class DraftGenerator(MTGDataGenerator):
         self.pick = data["pick"].apply(lambda x: name_to_idx_mapping[x])
         self.shifted_pick = self.pick.groupby(level=0).shift(1).fillna(self.n_cards)
         self.position = pd.Series(data.index.get_level_values("position"), index=data.index)
+        # draft-level conditioning ids. These are constant within a draft but stored
+        #     per (draft_id, position) row so they reshape exactly like `position`.
+        #     id 0 == unknown in every space, so datasets lacking these columns
+        #     (e.g. older sets, or inference defaults) train as the "average" policy.
+        rank_to_id = {
+            "bronze": 1,
+            "silver": 2,
+            "gold": 3,
+            "platinum": 4,
+            "diamond": 5,
+            "mythic": 6,
+        }
+        format_to_id = {"premier": 1, "trad": 2}
+        if "rank" in data.columns:
+            self.rank_id = data["rank"].map(lambda x: rank_to_id.get(x, 0)).astype(np.int32)
+        else:
+            self.rank_id = pd.Series(0, index=data.index, dtype=np.int32)
+        if "event_match_wins" in data.columns:
+            # raw run win-count, clamped to the 0-7 embedding range; the format
+            #     embedding disambiguates Bo1 Premier vs Bo3 Trad win distributions.
+            self.wins_id = data["event_match_wins"].fillna(0).clip(0, 7).astype(np.int32)
+        else:
+            self.wins_id = pd.Series(0, index=data.index, dtype=np.int32)
+        if "event_type" in data.columns:
+            self.format_id = (
+                data["event_type"].map(lambda x: format_to_id.get(str(x).lower(), 0)).astype(np.int32)
+            )
+        else:
+            self.format_id = pd.Series(0, index=data.index, dtype=np.int32)
 
     def generate_data(self, indices):
         draft_ids = self.draft_ids[indices]
@@ -167,6 +196,9 @@ class DraftGenerator(MTGDataGenerator):
         picks = self.pick.loc[draft_ids].values.reshape(len(indices), self.t)
         shifted_picks = self.shifted_pick.loc[draft_ids].values.reshape(len(indices), self.t)
         positions = self.position.loc[draft_ids].values.reshape(len(indices), self.t)
+        rank_ids = self.rank_id.loc[draft_ids].values.reshape(len(indices), self.t)
+        wins_ids = self.wins_id.loc[draft_ids].values.reshape(len(indices), self.t)
+        format_ids = self.format_id.loc[draft_ids].values.reshape(len(indices), self.t)
         # draft_info = np.concatenate([packs, pools], axis=-1)
         if self.weights is not None:
             # comment below is if weights sum to 1 for each draft rather than for each batch
@@ -181,7 +213,10 @@ class DraftGenerator(MTGDataGenerator):
         positions = tf.convert_to_tensor(positions.astype(np.int32), dtype=tf.int32)
         picks = tf.convert_to_tensor(picks.astype(np.float32), dtype=tf.int32)
         shifted_picks = tf.convert_to_tensor(shifted_picks.astype(np.float32), dtype=tf.int32)
-        return (packs, shifted_picks, positions), picks, weights
+        rank_ids = tf.convert_to_tensor(rank_ids.astype(np.int32), dtype=tf.int32)
+        wins_ids = tf.convert_to_tensor(wins_ids.astype(np.int32), dtype=tf.int32)
+        format_ids = tf.convert_to_tensor(format_ids.astype(np.int32), dtype=tf.int32)
+        return (packs, shifted_picks, positions, rank_ids, wins_ids, format_ids), picks, weights
 
 
 class DeckGenerator(MTGDataGenerator):

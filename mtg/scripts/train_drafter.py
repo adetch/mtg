@@ -54,11 +54,14 @@ def main():
     # we run inference once before saving the model in order to serialize it with the right input parameters for inference
     # and we do it with train_gen because val_gen can be None, and this isn't used for validation but serialization
     x, y, z = train_gen[0]
-    (packs, shifted_picks, positions) = x
+    (packs, shifted_picks, positions, rank_ids, wins_ids, format_ids) = x
     model_input = (
         tf.expand_dims(packs[0], 0),
         tf.expand_dims(shifted_picks[0], 0),
         tf.expand_dims(positions[0], 0),
+        tf.expand_dims(rank_ids[0], 0),
+        tf.expand_dims(wins_ids[0], 0),
+        tf.expand_dims(format_ids[0], 0),
     )
     output, attention = model(model_input, training=False, return_attention=True)
     model.save(FLAGS.model_name)
@@ -144,8 +147,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--rare_lambda",
         type=float,
-        default=10.0,
-        help="regularization coefficient for penalizing the model for taking rares when human doesn't",
+        default=0.0,
+        help="DROPPED for SOS conditioning (was 10.0): the explicit 'penalize a rare the "
+        "human didn't take' term is removed; rank/wins/format conditioning replaces the "
+        "skill prior it was standing in for. See state/sos_conditioning_plan.md.",
     )
     parser.add_argument(
         "--cmc_lambda",
