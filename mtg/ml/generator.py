@@ -245,10 +245,51 @@ class DeckGenerator(MTGDataGenerator):
         self.pos_neg_sample = pos_neg_sample
         self.mask_decks = mask_decks
 
+    def generate_global_data(self, data):
+        # Base sets up the row-aligned .values arrays for deck/sideboard(/basics)
+        #     plus self.weights. We additionally build row-aligned int32 id arrays
+        #     for the deck-level skill conditioning (mirrors DraftGenerator). These
+        #     are one id per training row, in the SAME order as self.deck, so they
+        #     index cleanly with the same `indices` in generate_data.
+        super().generate_global_data(data)
+        rank_to_id = {
+            "bronze": 1,
+            "silver": 2,
+            "gold": 3,
+            "platinum": 4,
+            "diamond": 5,
+            "mythic": 6,
+        }
+        format_to_id = {"premier": 1, "trad": 2}
+        n = data.shape[0]
+        # Prefer the precomputed *_id columns emitted by get_bo1_decks; the rank/
+        #     format string fallbacks exist only for robustness on other frames.
+        #     id 0 == "unknown" everywhere -> trains as the "average" policy.
+        if "rank_id" in data.columns:
+            self.rank_ids = data["rank_id"].fillna(0).astype(np.int32).values
+        elif "rank" in data.columns:
+            self.rank_ids = (
+                data["rank"].map(lambda x: rank_to_id.get(str(x).lower(), 0)).fillna(0).astype(np.int32).values
+            )
+        else:
+            self.rank_ids = np.zeros(n, dtype=np.int32)
+        if "wins_id" in data.columns:
+            self.wins_ids = data["wins_id"].fillna(0).clip(0, 7).astype(np.int32).values
+        else:
+            self.wins_ids = np.zeros(n, dtype=np.int32)
+        if "format_id" in data.columns:
+            self.format_ids = data["format_id"].fillna(0).astype(np.int32).values
+        else:
+            self.format_ids = np.zeros(n, dtype=np.int32)
+
     def generate_data(self, indices):
         decks = self.deck[indices, :]
         sideboards = self.sideboard[indices, :]
         basics = self.deck_basics[indices, :]
+        # row-aligned conditioning ids for this batch (constant per draft/config)
+        rank_ids = self.rank_ids[indices]
+        wins_ids = self.wins_ids[indices]
+        format_ids = self.format_ids[indices]
         if self.mask_decks:
             max_n_non_basics = np.max(decks.sum(axis=1))
             n = int(max_n_non_basics) + 2
@@ -261,7 +302,13 @@ class DeckGenerator(MTGDataGenerator):
             masked_decks = masked_decks.astype(np.float32)
             cards_to_add = (decks[:, None, :] - masked_decks).astype(np.float32)
             modified_sideboards = (sideboards[:, None, :] + cards_to_add).astype(np.float32)
-            X = (modified_sideboards, masked_decks)
+            # the ids are constant across the `n` masked-deck samples of a draft,
+            #     so broadcast each row's id across its n samples -> (len(indices), n)
+            #     int32, aligned with masked_decks' (len(indices), n, n_cards) shape.
+            rank_ids = np.repeat(rank_ids[:, None], n, axis=1).astype(np.int32)
+            wins_ids = np.repeat(wins_ids[:, None], n, axis=1).astype(np.int32)
+            format_ids = np.repeat(format_ids[:, None], n, axis=1).astype(np.int32)
+            X = (modified_sideboards, masked_decks, rank_ids, wins_ids, format_ids)
             Y = (basics.astype(np.float32), cards_to_add)
         else:
             X = (decks + sideboards).astype(np.float32)

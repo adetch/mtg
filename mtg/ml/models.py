@@ -484,6 +484,9 @@ class DeckBuilder(tf.Module):
         dropout=0.0,
         latent_dim=32,
         embeddings=128,
+        n_ranks=7,
+        n_wins=8,
+        n_formats=3,
         name=None,
     ):
         super().__init__(name=name)
@@ -547,13 +550,42 @@ class DeckBuilder(tf.Module):
         #     projects it to the latent representation of the deck
         self.merge_deck_and_pool = nn.Dense(concat_dim, latent_dim, activation=None, name="merge_deck_and_pool")
         self.dropout = dropout
+        # Deck-level skill conditioning (additive, mirrors the DraftBot). id 0 ==
+        #     "unknown" in every space, so a legacy 2-tuple inference call -- which
+        #     defaults all ids to 0 (see __call__) -- reproduces the original
+        #     "average deck" policy exactly. We embed the deck's rank tier, its run
+        #     win-count bucket, and its event format, sum them, and add the result
+        #     into self.latent_rep BEFORE the card_decoder. The embedding width is
+        #     `latent_dim` (NOT the card-embedding width) because the conditioning
+        #     vector is summed onto self.latent_rep, which lives in latent_dim space.
+        self.n_ranks = n_ranks
+        self.n_wins = n_wins
+        self.n_formats = n_formats
+        self.rank_embedding = Embedding(n_ranks, latent_dim, name="rank_embedding")
+        self.wins_embedding = Embedding(n_wins, latent_dim, name="wins_embedding")
+        self.format_embedding = Embedding(n_formats, latent_dim, name="format_embedding")
 
     # TODO: change input data to not require relaxed shape, and change from
     #      vector of n_cards size to vector of size cards in pool for efficiency
     @tf.function(experimental_relax_shapes=True)
     def __call__(self, features, training=None):
         # batch x sample x n_cards
-        pools, decks = features
+        #
+        # Variadic, backward-compatible features. Legacy inference passes a
+        #     2-tuple (pools, decks); the conditioned path passes a 5-tuple
+        #     (pools, decks, rank_ids, wins_ids, format_ids). Branching on the
+        #     Python-level `len(features)` is tf.function-safe: each distinct input
+        #     structure traces its own concrete function (do NOT use tf.cond /
+        #     tf.shape here -- that would force a single trace and break the
+        #     structural dispatch). For the 2-tuple call we default every id to 0
+        #     ("unknown"), which makes the additive conditioning a no-op and
+        #     reproduces the pre-conditioning policy.
+        if len(features) == 2:
+            pools, decks = features
+            zeros = tf.zeros(tf.shape(pools)[:2], dtype=tf.int32)
+            rank_ids = wins_ids = format_ids = zeros
+        else:
+            pools, decks, rank_ids, wins_ids, format_ids = features
         # project pool and partial deck to their respective latent space as sums of
         #     card embeddings
         self.latent_rep_pool = tf.reduce_sum(pools[:, :, :, None] * self.card_embeddings[None, None, :, :], axis=2)
@@ -564,6 +596,18 @@ class DeckBuilder(tf.Module):
             concat_emb = tf.nn.dropout(concat_emb, self.dropout)
         # yield final latent representation of deck
         self.latent_rep = self.merge_deck_and_pool(concat_emb, training=training)
+        # additive deck-level skill conditioning: emb(rank) + emb(wins) + emb(format).
+        #     The ids are constant within a (batch, sample) row, so each lookup is
+        #     (batch, sample, latent_dim) and adds directly onto self.latent_rep,
+        #     which is (batch, sample, latent_dim). This steers the decoder toward
+        #     the policy of the conditioned skill/format slice (e.g. Mythic / 7-win
+        #     / Premier == "imitate winning Bo1 decks"). Summed BEFORE the decoder.
+        self.deck_conditioning = (
+            self.rank_embedding(rank_ids, training=training)
+            + self.wins_embedding(wins_ids, training=training)
+            + self.format_embedding(format_ids, training=training)
+        )
+        self.latent_rep = self.latent_rep + self.deck_conditioning
         # compute the cards to add from the available pool
         self.cards_to_add = self.card_decoder(self.latent_rep, training=training) * pools
         # the final built deck is equal to the cards we want to allocate from the pool

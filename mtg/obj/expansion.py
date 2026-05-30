@@ -180,8 +180,37 @@ class Expansion:
         return card_df
 
     def get_bo1_decks(self):
-        d = {column: "last" for column in self.bo1.columns if column not in ["opp_colors"]}
-        d.update(
+        # PER-CONFIG deck examples with deck-level skill conditioning ids.
+        #
+        # Bo1 game rows are per-GAME: a single `draft_id` plays a *run* of Bo1
+        #     matches and is allowed to EDIT the maindeck between games. The old
+        #     implementation collapsed every draft_id to its LAST deck row while
+        #     summing `won` over the whole run -- which mis-attributes wins from
+        #     one 40-card config onto a different one. We instead group by
+        #     (draft_id, exact 40-card maindeck), so each distinct config a player
+        #     ran becomes its own training example, and `won` is summed only over
+        #     the games that config actually played (its true run win-count).
+        #
+        # The three conditioning columns mirror the DraftBot's draft-level
+        #     conditioning (see DraftGenerator):
+        #       rank_id:   0=unknown, 1..6 = bronze..mythic
+        #       wins_id:   the config's run win-count, clipped to [0, 7]
+        #       format_id: 1 (Premier) -- bo1 is Premier/Bo1 by construction; the
+        #                  bo1 frame has no event_type/event_match_wins columns.
+        df = self.bo1.copy()
+        deck_cols = [x for x in df.columns if x.startswith("deck_")]
+        # only keep complete 40-card maindecks
+        df = df[df[deck_cols].sum(1) == 40]
+        # config key == the exact 40-card maindeck (tuple of all deck_* counts).
+        #     One draft_id can produce several distinct configs across its run.
+        config_key = df[deck_cols].astype(int).apply(tuple, axis=1)
+        df = df.assign(_config=config_key)
+        group_keys = ["draft_id", "_config"]
+        # column -> aggregation. Card columns and static per-config metadata take
+        #     "last" (constant within a config); rate-like columns are averaged;
+        #     `won` is summed -> the config's run win-count.
+        agg = {c: "last" for c in df.columns if c not in group_keys + ["opp_colors"]}
+        agg.update(
             {
                 "won": "sum",
                 "on_play": "mean",
@@ -190,9 +219,29 @@ class Expansion:
                 "num_turns": "mean",
             }
         )
-        decks = self.bo1.groupby("draft_id").agg(d)
-        deck_cols = [x for x in decks.columns if x.startswith("deck_")]
-        decks = decks[decks[deck_cols].sum(1) == 40]
+        decks = df.groupby(group_keys, sort=False).agg(agg).reset_index(drop=False)
+        # drop the helper config key; keep draft_id (split id) and date (recency
+        #     weighting in importance_weighting needs df['date']).
+        decks = decks.drop(columns=["_config"])
+        # deck-level skill conditioning ids
+        rank_to_id = {
+            "bronze": 1,
+            "silver": 2,
+            "gold": 3,
+            "platinum": 4,
+            "diamond": 5,
+            "mythic": 6,
+        }
+        if "rank" in decks.columns:
+            decks["rank_id"] = (
+                decks["rank"].map(lambda x: rank_to_id.get(str(x).lower(), 0)).fillna(0).astype("int32")
+            )
+        else:
+            decks["rank_id"] = 0
+        # `won` is per-game 0/1, summed above -> the run win-count for this config.
+        decks["wins_id"] = decks["won"].fillna(0).clip(0, 7).astype("int32")
+        # bo1 == Premier; id 1 (no event_type column to disambiguate trad).
+        decks["format_id"] = 1
         return decks
 
     def create_data_dependent_attributes(self):
