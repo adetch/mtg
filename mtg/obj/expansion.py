@@ -242,8 +242,18 @@ class Expansion:
             decks["rank_id"] = 0
         # `won` is per-game 0/1, summed above -> the run win-count for this config.
         decks["wins_id"] = decks["won"].fillna(0).clip(0, 7).astype("int32")
-        # bo1 == Premier; id 1 (no event_type column to disambiguate trad).
-        decks["format_id"] = 1
+        # Format ids: 0=unknown, 1=PremierDraft, 2=TradDraft, 3=Sealed, 4=TradSealed.
+        # The event_type column is present when sealed game data is mixed into bo1.
+        format_to_id = {"premierdraft": 1, "sealed": 3, "tradsealed": 4}
+        if "event_type" in decks.columns:
+            decks["format_id"] = (
+                decks["event_type"]
+                .map(lambda x: format_to_id.get(str(x).lower(), 1))
+                .fillna(1)
+                .astype("int32")
+            )
+        else:
+            decks["format_id"] = 1
         return decks
 
     def create_data_dependent_attributes(self):
@@ -551,6 +561,23 @@ class DataBackedExpansion(Expansion):
         names = sorted({name for name in names if name not in basics})
         ordered_names = basics + names
         scryfall = self._local_scryfall_rows()
+
+        # Fail loudly on a missing name→meta join. Previously a miss silently
+        # substituted {} (empty mana_cost/colors), which let bonus-sheet reprints
+        # (filed under other set codes than the draft set) ship with no mana cost
+        # and produce uncastable decks. A nonbasic card with no scryfall row is a
+        # data gap — surface it instead of burying it.
+        missing = [n for n in ordered_names if n not in basics and n not in scryfall]
+        if missing:
+            preview = ", ".join(missing[:15])
+            raise ValueError(
+                f"{len(missing)} draft card name(s) absent from the local scryfall "
+                f"export ({len(scryfall)} entries) — they would ship with empty "
+                f"mana_cost/colors. Regenerate the export set-agnostically "
+                f"(by exact name / arena_id, not set:NAME) so reprints resolve. "
+                f"Missing: {preview}{' ...' if len(missing) > 15 else ''}"
+            )
+
         rows = []
         for idx, name in enumerate(ordered_names):
             card = scryfall.get(name, {})

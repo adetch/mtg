@@ -67,6 +67,7 @@ def load_bo1_data(filename, cards):
     metadata_cols = [
         "draft_id",
         "draft_time",
+        "event_type",
         "won",
         "user_game_win_rate_bucket",
         "rank",
