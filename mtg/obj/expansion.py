@@ -515,9 +515,11 @@ class BRO(Expansion):
 
 class DataBackedExpansion(Expansion):
     def _local_scryfall_rows(self):
+        # One set-code convention (step 3b): exports are lowercase-named
+        # ({set}_scryfall.json) and this lowercases the input, so a single
+        # candidate suffices -- the old lower/upper "try both" is removed.
         candidates = [
             os.path.join(os.getcwd(), "artifacts", f"{self.expansion.lower()}_scryfall.json"),
-            os.path.join(os.getcwd(), "artifacts", f"{self.expansion.upper()}_scryfall.json"),
         ]
         for path in candidates:
             if not os.path.exists(path):

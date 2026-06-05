@@ -18,7 +18,11 @@ def display_deck(pool, basics, spells, cards, return_url=False):
     basics = np.squeeze(basics)
     spells = np.squeeze(spells)
     deck = np.concatenate([basics, spells])
-    idx_to_name = cards.set_index("idx")["name"].to_dict()
+    # Prefer the registry's canonical display_name (scripts/enrich_cards_pkl.py)
+    # so deck_text matches the structured maindeck; fall back to the lowercase
+    # `name` for un-enriched pickles.
+    _name_col = "display_name" if "display_name" in cards.columns else "name"
+    idx_to_name = cards.set_index("idx")[_name_col].to_dict()
     sb_text = "SIDEBOARD\n\n"
     deck_text = "DECK\n\n"
     deck_json = {"sideboard": [], "deck": []}

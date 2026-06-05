@@ -153,10 +153,20 @@ class DraftGenerator(MTGDataGenerator):
             self.weights = data["ml_weights"]
         else:
             self.weights = None
+        # canonical name_key (step 3): primary face + strip ,'’ + lower + collapse
+        # whitespace. Kept inline so vendored code stays import-standalone; a
+        # consistency test pins it byte-identical to mtga_drafter.name_norm.
+        def _name_key(s):
+            base = s.split("//", 1)[0].replace(",", "").replace("'", "").replace("’", "").lower()
+            for _ws in "\t\n\r\f\v":  # explicit ASCII whitespace -> space (parity w/ TS)
+                base = base.replace(_ws, " ")
+            return " ".join(w for w in base.split(" ") if w)
         name_to_idx_mapping = {
-            k.split("//")[0].strip().lower(): v for k, v in self.cards.set_index("name")["idx"].to_dict().items()
+            _name_key(k): v for k, v in self.cards.set_index("name")["idx"].to_dict().items()
         }
-        self.pick = data["pick"].apply(lambda x: name_to_idx_mapping[x])
+        # look up with the SAME normalizer used to build the keys, or punctuated
+        # picks (e.g. "Akroma's Will") miss now that keys strip `,'’`.
+        self.pick = data["pick"].apply(lambda x: name_to_idx_mapping[_name_key(x)])
         self.shifted_pick = self.pick.groupby(level=0).shift(1).fillna(self.n_cards)
         self.position = pd.Series(data.index.get_level_values("position"), index=data.index)
         # draft-level conditioning ids. These are constant within a draft but stored
