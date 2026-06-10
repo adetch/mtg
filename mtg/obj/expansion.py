@@ -86,8 +86,15 @@ class Expansion:
         self.cards["flip"] = self.cards["layout"].apply(lambda x: 0.0 if x == "normal" else 1.0)
         self.cards = self.cards.sort_values(by="idx")
 
-    def get_card_data_for_ML(self, return_df=True):
-        ml_data = self.get_card_stats()
+    def get_card_data_for_ML(self, return_df=True, include_play_stats=True):
+        # include_play_stats=False drops the 17lands GIH-WR/ALSA/win-rate block
+        # (get_card_stats) and keeps ONLY content features — the ablation arm for
+        # "can the model function without play data" (new sets / limited user data).
+        # Default True == production unchanged.
+        if include_play_stats:
+            ml_data = self.get_card_stats()
+        else:
+            ml_data = pd.DataFrame(index=self.cards.set_index("name").index)
         colors = list("WUBRG")
         cards = self.cards.set_index("name").copy()
         ml_data = ml_data.reindex(cards.index).fillna(0.0)

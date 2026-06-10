@@ -196,9 +196,14 @@ def get_card_rating_data(expansion, endpoint=None, start=None, end=None, colors=
             endpoint += f"&colors={colors}"
     card_json = requests.get(endpoint).json()
     card_df = pd.DataFrame(card_json).fillna(0.0)
-    numerical_cols = card_df.columns[card_df.dtypes != object]
     card_df["name"] = card_df["name"].str.lower()
     card_df = card_df.set_index("name")
+    # Select the numeric play-stat columns AFTER indexing by name. The old
+    # `dtypes != object` test silently broke under pandas>=2 string dtype (str
+    # columns like name/color/url are no longer `object`, so they leaked into the
+    # selection and the subsequent column lookup KeyError'd on the now-index 'name'
+    # -> get_card_stats returned nothing -> expansions baked content-only).
+    numerical_cols = card_df.select_dtypes(include="number").columns
     return card_df[numerical_cols]
 
 
